@@ -43,14 +43,13 @@ def testEndPoint(firstRequest: FirstRequestModel):
 
     if error_status:
         try:
-            raise Exception("Simulated internal server error")
+            raise HTTPException(
+                status_code=status.HTTP_404_NOT_FOUND,
+                detail=f"The thread has not been created due to Internal Server Error"
+            )
         except Exception as e:
             # 로그에 상세 정보 기록
             logger.error(f"Error occurred: The thread has not been created due to Internal Server Error, {e}")
-            raise HTTPException(
-                status_code=status.HTTP_404_NOT_FOUND,
-                detail=f"The thread has not been created due to Internal Server Error, {e}"
-            )
     else:
         return {"message": "Hello"}
 
