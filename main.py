@@ -4,6 +4,7 @@ from starlette import status
 from pydantic import BaseModel, Field
 import time
 from openai import OpenAI
+import os
 
 
 # 로깅 설정
