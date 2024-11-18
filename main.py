@@ -16,7 +16,7 @@ logger = logging.getLogger("fastapi-logger")
 
 # OpenAI 및 HTTP 라이브러리 로그 수준 조정
 # logging.getLogger("httpx").setLevel(logging.INFO)  # HTTP 요청/응답 정보는 INFO 수준으로 표시
-logging.getLogger("httpcore").setLevel(logging.INFO)  # HTTP 코어 라이브러리 INFO 수준
+# logging.getLogger("httpcore").setLevel(logging.INFO)  # HTTP 코어 라이브러리 INFO 수준
 logging.getLogger("openai").setLevel(logging.WARNING)
 logging.getLogger("uvicorn").setLevel(logging.WARNING)
 logging.getLogger("uvicorn.access").setLevel(logging.WARNING)
