@@ -30,7 +30,7 @@ def test_end_point(firstRequest: FirstRequestModel):
         # Error를 강제로 발생시켜 상황을 만듦
         raise HTTPException(
             status_code=status.HTTP_404_NOT_FOUND,
-            detail="The thread has not been created due to Internal Server Error"
+            detail="The thread has not been created do to Internal Server Error"
         )
     except HTTPException as e:
         # 에러를 로깅
