@@ -11,18 +11,16 @@ import logging
 API_KEY = os.getenv('API_KEY')
 tori_assistant_id = os.getenv('tori_assistant_id')
 
-
-
 client = OpenAI(
     api_key=API_KEY,
     project='proj_YA4wA5gFbCTSd8ImZ1UapNJN'
 )
 app = FastAPI()
 
-# 로깅 설정
+# 로깅 설정 (시간 제거)
 logging.basicConfig(
     level=logging.DEBUG,
-    format="%(asctime)s - %(levelname)s - %(message)s"
+    format="%(levelname)s - %(message)s"
 )
 logger = logging.getLogger("fastapi-logger")
 
