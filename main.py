@@ -4,18 +4,23 @@ from fastapi import FastAPI, HTTPException
 from starlette import status
 import uvicorn
 from pydantic import BaseModel, Field
+# from moderation import criteria_alert_from_prompt
 from typing import Literal
 import os
 import logging
+import firebase_admin
+from firebase_admin import credentials, firestore
 
 API_KEY = os.getenv('API_KEY')
 tori_assistant_id = os.getenv('tori_assistant_id')
+
 
 client = OpenAI(
     api_key=API_KEY,
     project='proj_YA4wA5gFbCTSd8ImZ1UapNJN'
 )
 app = FastAPI()
+
 
 # 로깅 설정 (시간 제거)
 logging.basicConfig(
@@ -31,9 +36,16 @@ logging.getLogger("uvicorn").setLevel(logging.WARNING)
 logging.getLogger("uvicorn.access").setLevel(logging.WARNING)
 
 
+
+
+
+
+
+
+
+
 class FirstRequestModel(BaseModel):
     first_prompt: str = Field(..., min_length=1, description='Input first_assistant_prompt')
-
     model_config = {
         "json_schema_extra": {
             'example': {
@@ -42,18 +54,8 @@ class FirstRequestModel(BaseModel):
         }
     }
 
-
 class ThreadIdResponseModel(BaseModel):
     new_threadId: str
-
-
-async def createMessageInThread(threadId: str, role: str, content: str):
-    await asyncio.to_thread(
-        client.beta.threads.messages.create,
-        thread_id=threadId,
-        role=role,
-        content=content
-    )
 
 
 @app.post(
@@ -70,55 +72,87 @@ async def createMessageInThread(threadId: str, role: str, content: str):
                     }
                 }
             }
-        },
-        503: {
-            "description": "Service Unavailable",
-            "content": {
-                "application/json": {
-                    "example": {
-                        "detail": "Thread setup failed due to Service Unavailable, <Error Explanation>"
-                    }
-                }
-            }
         }
     }
 )
 async def makeThreadId(firstRequest: FirstRequestModel) -> ThreadIdResponseModel:
-    '''client request가 있으면 새로운 쓰레드를 만들고 초기 세팅을 한 뒤 해당 thread_id를 return 하는 함수'''
-    try:
-        empty_thread = await asyncio.to_thread(client.beta.threads.create)
-        new_thread_id = empty_thread.id
-    except Exception as e:
-        raise HTTPException(
-            status_code=status.HTTP_500_INTERNAL_SERVER_ERROR,
-            detail=f'The thread has not been created due to Internal Server Error, {e}'
-        )
+    '''client request가 있으면 새로운 쓰레드를 만들고 해당 thread_id를 return 하는 함수'''
 
-    try:
-        await createMessageInThread(
-            threadId=new_thread_id,
-            role="user",
-            content='(대화시작)'
-        )
-        await createMessageInThread(
-            threadId=new_thread_id,
-            role="assistant",
-            content=firstRequest.first_prompt
-        )
-        return ThreadIdResponseModel(new_threadId=new_thread_id)
 
-    except Exception as e:
-        raise HTTPException(
-            status_code=status.HTTP_503_SERVICE_UNAVAILABLE,
-            detail=f'The thread setting has not been successfuly completed due to Internal Server Error, {e}'
-        )
+    max_try = 3
+    current_try = 0
+
+    while True:
+        try:
+            empty_thread = await asyncio.to_thread(client.beta.threads.create)
+            new_thread_id = empty_thread.id
+            logger.info(f'Create ThreadId Success, threadId : {new_thread_id}')
+
+            return ThreadIdResponseModel(new_threadId=new_thread_id)
+        
+        except Exception as e:
+            logger.error(f'The thread has not been created due to Internal Server Error, {e}')
+            if current_try<max_try :
+                current_try += 1
+                logger.info(f'Retrying...')
+                continue
+            else:
+                logger.error(f'Terminal Error and raised Http Exception 500 {e}')
+                raise HTTPException(
+                    status_code=status.HTTP_500_INTERNAL_SERVER_ERROR,
+                    detail=f'The thread has not been created due to Internal Server Error, {e}'
+                )
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+tori_system_prompt = '''
+사용자가 그날 하루를 대화를 통해 기록을 하도록 유도하는 기록도우미 ‘토리’야. 모든 말과 행동을 ‘토리’처럼 해야해.
+'#[대화스타일]'을 참고해 사용자가 재밌게 오늘 하루를 돌아보고 대화를 통해 기록을 쌓을 수 있도록 질문하면서 대화를 이어나가줘. 
+질문은 '#[질문을 통한 대화유도]'를 참고해 진행해주고 질문의 중간중간 '#[감정표현]'을 참고해줘. 더 기록할 내용이 없다고 하면 친근한 안부 인사로 마무리 해줘
+
+#대화 스타일
+1. 친구 같은 통통튀는 말투 사용
+    - `ㅋㅋㅋㅋ`, `엥 진짜?😮`, `마자` 등의 표현 사용하고 가끔 **이모티콘**도 활용
+2. 50자 이내의 **짧고 간결한 응답과 질문**
+
+#질문을 통한 대화 유도
+1. 사용자의 중요한 사건에 집중
+    - **사용자가 감정적으로 표현한 부분**이나 **답변이 긴 부분**에 대해 생각, 느낌, 감정등을 기록할 수 있도록 추가 질문
+    - 예: "엥, 그게 진짜야? 왜 그렇게 생각했어?"
+2. 사용자의 피로감 감지 및 대응
+    - **`ㅇㅇ`, `그래`, `아니` 와 같이 답변이 한두 단어로 짧아지거나**, `ㅎㅎ`, `ㅋㅋ`, `^^` 같은 이모티콘만 사용하면 피로감을 느끼는 것으로 판단합니다.
+    - 이 경우 추가 질문을 자제하고, "오늘 그거 말고 또 기억에 남는 일 있어?", "요즘 뭐 고민은 없고?"와 같이 하루의 다른 부분을 물어봅니다. 단, 오늘 하루 돌아보니 기분은 어때?와 같은 질문은 하지 않음.
+    - **추가로 물어봤음에도 없다고 하면 마무리 인사를 진행함.**
+
+#감정 표현
+1. "칭찬, 위로, 공감등의 감정표현을 함. 단, 감정표현이 나오는 상황에서도 반드시 질문과 같이 진행해야함.
+'''
+
 
 
 class MessageModel(BaseModel):
     thread_id: str = Field(..., min_length=1, description="Input user's thread_id")
     new_user_message: str = Field(..., min_length=1, description="Input user prompt")
 
-    model_config = {
+    model_config = {#docs에 보이는 예시
         "json_schema_extra": {
             "example": {
                 "thread_id": "thread_ysvw3IGw9WH2NgGtas8qvNdX",
@@ -127,48 +161,100 @@ class MessageModel(BaseModel):
         }
     }
 
-
 class ToriResponseModel(BaseModel):
     tori_message: str
 
 
-async def createRun(thread_id: str, assistant_id: str):
-    return await asyncio.to_thread(
-        client.beta.threads.runs.create,
-        thread_id=thread_id,
-        assistant_id=assistant_id
-    )
 
 
-async def retrieveRun(thread_id: str, run_id: str):
-    return await asyncio.to_thread(
-        client.beta.threads.runs.retrieve,
-        thread_id=thread_id,
-        run_id=run_id
-    )
+
+async def getPreviousChat(threadId: str, new_user_message:str) -> list:
+    return await asyncio.to_thread(_getPreviousChat_sync, threadId, new_user_message)
+
+def _getPreviousChat_sync(threadId: str, new_user_message:str) -> list:
+    if not firebase_admin._apps:
+        cred = credentials.Certificate("/etc/secrets/dotori-fd1b0-firebase-adminsdk-zzxxd-fb0e07e05e.json")
+        firebase_admin.initialize_app(cred)
+    db = firestore.client()
+
+    chats_data = []
+
+    # Get all top-level collections
+    collections = db.collections()
+    
+    for collection in collections:
+        # Get the 'chat' document reference in this collection
+        chat_doc_ref = collection.document('chat')
+        chat_doc = chat_doc_ref.get()
+        
+        if chat_doc.exists:
+            # Fetch and store the data
+            chat_data = chat_doc.to_dict()
+            # Use collection ID as the key
+            for date, chat_info in chat_data.items():
+                if chat_info['threadId'] == threadId:
+
+                    start_key = "채팅_10001"
+                    # 결과를 저장할 리스트
+                    chat_sequence = [        
+                        {
+                            "role": "system",
+                            "content": f"{tori_system_prompt}"
+                        },
+                        {
+                            "role": "user",
+                            "content": "(대화시작)"
+                        },
+                        {
+                            "role": "assistant",
+                            "content": "오늘 뭐가 가장 기억에 남았어?"
+                        }
+                    ]
+
+                    # 현재 키를 초기값으로 설정
+                    current_key = start_key
+
+                    # 순서대로 채팅 내용을 리스트에 추가
+                    while current_key in chat_info:
+                        chat_sequence.append(chat_info[current_key])
+                        
+                        # 다음 키 생성
+                        next_number = int(current_key.split('_')[1]) + 1
+                        current_key = f"채팅_{next_number:05}"
+
+
+                    if chat_sequence[-1].get('role', '') != 'user':
+                        chat_sequence.append(
+                            {
+                            "role": "user",
+                            "content": f"{new_user_message}"
+                            }
+                        )
+                    
+                    return chat_sequence
 
 
 @app.post(
     "/retrieve_tori_message",
     status_code=status.HTTP_201_CREATED,
     response_model=ToriResponseModel,
-    responses={
-        404: {
-            "description": "Failed to CreateMessageInThread",
+    responses={ #docs에 보이는 예시
+        500: {
+            "description": "Failed to Send Message",
             "content": {
                 "application/json": {
                     "example": {
-                        "detail": "Failed to CreateMessageInThread, <Error Explanation>"
+                        "detail": "The conversation has not been responsed intentionally due to, <Error Explanation>"
                     }
                 }
             },
         },
-        500: {
-            "description": "Internal Server Error",
+        501: {
+            "description": "Failed to fecth data from Firebase",
             "content": {
                 "application/json": {
                     "example": {
-                        "detail": "Failed to <Failed Job>, <Error Explanation>"
+                        "detail": "Failed to fetch data from firebase console due to, <Error Explanation>"
                     }
                 }
             },
@@ -176,72 +262,60 @@ async def retrieveRun(thread_id: str, run_id: str):
     },
 )
 async def getMessageFromTori(model: MessageModel) -> ToriResponseModel:
-    thread_id = model.thread_id
-    user_prompt = model.new_user_message
-
-    logger.info("Starting process to retrieve Tori message.")
-    logger.debug(f"Thread ID: {thread_id}, User Prompt: {user_prompt}")
-
     try:
-        await createMessageInThread(
-            threadId=thread_id,
-            role="user",
-            content=user_prompt,
-        )
-    except Exception as e:
-        logger.error(f"Failed to CreateMessageInThread: {e}")
-        raise HTTPException(
-            status_code=status.HTTP_404_NOT_FOUND,
-            detail=f"Failed to CreateMessageInThread, {e}",
-        )
+        previous_chat_list = await getPreviousChat(threadId=model.thread_id, 
+                                                   new_user_message=model.new_user_message) 
+        logger.info(f'Fetch Successful from firebase')
 
-    try:
-        run = await createRun(thread_id=thread_id, assistant_id=tori_assistant_id)
-        run_id = run.id
     except Exception as e:
-        logger.error(f"Failed to CreateRun: {e}")
+        logger.error(f'Failed to fetch data from firebase console due to {e}')
         raise HTTPException(
-            status_code=status.HTTP_500_INTERNAL_SERVER_ERROR,
-            detail=f"Failed to CreateRun, {e}",
+            status_code=status.HTTP_501_NOT_IMPLEMENTED,
+            detail=f'Failed to fetch data from firebase console due to {e}'
         )
-
-    timeout = asyncio.get_event_loop().time() + 15  # 15 seconds timeout
+    
+    max_try = 3
+    current_try = 0
 
     while True:
         try:
-            retrieve_run = await retrieveRun(thread_id=thread_id, run_id=run_id)
+            completion = await asyncio.to_thread(
+                client.chat.completions.create,
+                model="ft:gpt-4o-2024-08-06:personal:toriforest002:ATRZ3Q78",
+                temperature = 0.21,
+                messages=previous_chat_list,
+            )
+
+            response = completion.choices[0].message.content
+            logger.info(f'Response succesfully generated, response = {response}')
+
+            return ToriResponseModel(tori_message=response)
+
         except Exception as e:
-            logger.error(f"Failed to RetrieveRun: {e}")
-            raise HTTPException(
-                status_code=status.HTTP_500_INTERNAL_SERVER_ERROR,
-                detail=f"Failed to RetrieveRun, {e}",
-            )
+            logger.error(f'The conversation has not been responsed intentionally due to {e}')
 
-        if retrieve_run.status == "completed":
-            logger.info("Run completed successfully. Retrieving messages.")
-            thread_messages = await asyncio.to_thread(
-                client.beta.threads.messages.list,
-                thread_id
-            )
-            tori_message = thread_messages.data[0].content[0].text.value
-            return ToriResponseModel(tori_message=tori_message)
+            if current_try<max_try : 
+                current_try += 1
+                logger.info('Retrying...')
+                continue
+            else:
+                logger.error(f'Terminal Error and returned Hard-Coded Message')
+                return ToriResponseModel(tori_message='(토리가 잠깐 딴 생각을 했나봐요! 다시 한번 토리를 불러주세요 ㅜㅜ)')
 
-        elif retrieve_run.status in ["queued", "in_progress"]:
-            logger.debug("Run is in progress. Retrying...")
-            await asyncio.sleep(0.5)
-        else:
-            logger.error(
-                f"Failed to get completed status from Run and got {retrieve_run.status}, {Exception}"
-            )
-            return ToriResponseModel(
-                tori_message="(토리가 잠깐 딴 생각을 했나봐요! 다시 한번 토리를 불러주세요 ㅜㅜ)"
-            )
 
-        if asyncio.get_event_loop().time() > timeout:
-            logger.error("Timeout while waiting for the run to complete.")
-            return ToriResponseModel(
-                tori_message="(토리가 잠깐 딴 생각을 했나봐요! 다시 한번 토리를 불러주세요 ㅜㅜ)"
-            )
+
+
+
+
+
+
+
+
+
+
+
+
+
 
 
 system_prompt = '''
@@ -368,41 +442,59 @@ class ConversationModel(BaseModel):
     }
 )
 async def getSummaryFromGpt(conversationModel: ConversationModel) -> SummaryModel:
-    try:
-        completion = await asyncio.to_thread(
-            client.beta.chat.completions.parse,
-            model="gpt-4o-mini",
-            messages=[
-                {
-                    "role": "system",
-                    "content": f"{system_prompt}"
-                },
-                {
-                    "role": "user",
-                    "content": f"{conversationModel.messages}"
-                },
-            ],
-            response_format=SummaryModel,
-        )
-        response = completion.choices[0].message
 
-        if response.parsed:
-            response_json = response.parsed.model_dump()
-            return SummaryModel(
-                dotori_emotion=response_json['dotori_emotion'],
-                summary=response_json['summary']
-            )
-        elif response.refusal:
-            raise HTTPException(
-                status_code=status.HTTP_451_UNAVAILABLE_FOR_LEGAL_REASONS,
-                detail=f'Refused by GPT for inappropriate Word use, {response.refusal}'
-            )
+    max_try = 3
+    current_try = 0
 
-    except Exception as e:
-        raise HTTPException(
-            status_code=status.HTTP_500_INTERNAL_SERVER_ERROR,
-            detail=f'Unidentified Errors with Structured Outputs completion : {e}'
-        )
+    while True:
+        try:
+            completion = await asyncio.to_thread(
+                client.beta.chat.completions.parse,
+                model="gpt-4o-2024-08-06",
+                messages=[
+                    {
+                        "role": "system",
+                        "content": f"{system_prompt}"
+                    },
+                    {
+                        "role": "user",
+                        "content": f"{conversationModel.messages}"
+                    },
+                ],
+                response_format=SummaryModel,
+            )
+            response = completion.choices[0].message
+
+            if response.parsed:
+                response_json = response.parsed.model_dump()
+                logger.info('Summary successfully generated')
+                return SummaryModel(
+                    dotori_emotion=response_json['dotori_emotion'],
+                    summary=response_json['summary']
+                )
+            elif response.refusal:
+                logger.error(f'Refused by GPT for inappropriate Word use, {response.refusal}')
+                raise HTTPException(
+                    status_code=status.HTTP_451_UNAVAILABLE_FOR_LEGAL_REASONS,
+                    detail=f'Refused by GPT for inappropriate Word use, {response.refusal}'
+                )
+
+        except Exception as e:
+            logger.error(f'The thread has not been created due to Internal Server Error, {e}')
+            if current_try<max_try :
+                current_try += 1
+                logger.info(f'Retrying...')
+                continue
+            else:
+                logger.error(f'Terminal Error and raised HTTP exception 500')
+                raise HTTPException(
+                    status_code=status.HTTP_500_INTERNAL_SERVER_ERROR,
+                    detail=f'Unidentified Errors with Structured Outputs completion : {e}'
+                )
+
+
+
+
 
 
 if __name__ == "__main__":
